@@ -52,15 +52,76 @@ func (r *RoleMiddleware) RequireRole(allowedRoles ...string) gin.HandlerFunc {
 }
 
 func (r *RoleMiddleware) AdminGuard() gin.HandlerFunc {
-	return r.RequireRole("admin")
+    return func(c *gin.Context) {
+        role := c.GetString("role")
+        
+        // Both admin and superadmin can access admin routes
+        if role != "admin" && role != "superadmin" {
+            c.JSON(http.StatusForbidden, gin.H{
+                "error_code": "insufficient_permissions",
+                "message":    "Admin access required. Your role: " + role,
+            })
+            c.Abort()
+            return
+        }
+        
+        c.Next()
+    }
+}
+
+// SuperAdminGuard - Only superadmin can access
+func (r *RoleMiddleware) SuperAdminGuard() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        role := c.GetString("role")
+        
+        // Only superadmin can access superadmin routes
+        if role != "superadmin" {
+            c.JSON(http.StatusForbidden, gin.H{
+                "error_code": "insufficient_permissions",
+                "message":    "SuperAdmin access required. Your role: " + role,
+            })
+            c.Abort()
+            return
+        }
+        
+        c.Next()
+    }
 }
 
 func (r *RoleMiddleware) ClientGuard() gin.HandlerFunc {
-	return r.RequireRole("client", "admin")
+    return func(c *gin.Context) {
+        role := c.GetString("role")
+        
+        // Only clients can access client routes
+        if role != "client" {
+            c.JSON(http.StatusForbidden, gin.H{
+                "error_code": "insufficient_permissions",
+                "message":    "Client access required. Your role: " + role,
+            })
+            c.Abort()
+            return
+        }
+        
+        c.Next()
+    }
 }
 
 func (r *RoleMiddleware) VisitorGuard() gin.HandlerFunc {
-	return r.RequireRole("visitor", "client", "admin")
+    return func(c *gin.Context) {
+        role := c.GetString("role")
+        
+        // Allow all roles to access (visitors, clients, admins can chat)
+        if role == "" {
+            c.JSON(http.StatusUnauthorized, gin.H{
+                "error_code": "unauthorized",
+                "message":    "Authentication required",
+            })
+            c.Abort()
+            return
+        }
+        
+        c.Next()
+    }
 }
 
 func (r *RoleMiddleware) RequireClientAccess() gin.HandlerFunc {
@@ -68,8 +129,8 @@ func (r *RoleMiddleware) RequireClientAccess() gin.HandlerFunc {
 		role := GetRole(c)
 		userClientID := GetClientID(c)
 		
-		// Admin can access all clients
-		if role == "admin" {
+		// Admin and superadmin can access all clients
+		if role == "admin" || role == "superadmin" {
 			c.Next()
 			return
 		}
@@ -127,7 +188,13 @@ func (r *RoleMiddleware) ValidateEmbedAccess() gin.HandlerFunc {
 // Helper function to check if user is admin
 func IsAdmin(c *gin.Context) bool {
 	role := GetRole(c)
-	return role == "admin"
+	return role == "admin" || role == "superadmin"
+}
+
+// Helper function to check if user is superadmin
+func IsSuperAdmin(c *gin.Context) bool {
+	role := GetRole(c)
+	return role == "superadmin"
 }
 
 // Helper function to check if user is client
@@ -144,7 +211,9 @@ func IsVisitor(c *gin.Context) bool {
 
 // Helper function to check client ownership
 func CanAccessClient(c *gin.Context, targetClientID string) bool {
-	if IsAdmin(c) {
+	role := GetRole(c)
+	// Admin and superadmin can access all clients
+	if role == "admin" || role == "superadmin" {
 		return true
 	}
 	

@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson"       // Use bson for index keys
+	"go.mongodb.org/mongo-driver/bson" // Use bson for index keys
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
-
-
 
 func ConnectMongoDB(cfg *Config) (*mongo.Client, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -103,6 +101,18 @@ func createIndexes(client *mongo.Client, dbName string) error {
 		},
 	}
 	_, err = messagesCollection.Indexes().CreateMany(context.Background(), messageIndexes)
+	if err != nil {
+		return err
+	}
+
+	// PDF Chunks collection indexes for search/vector filters
+	pdfChunksCollection := db.Collection("pdf_chunks")
+	pdfChunkIndexes := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "client_id", Value: 1}}},
+		{Keys: bson.D{{Key: "pdf_id", Value: 1}}},
+		{Keys: bson.D{{Key: "chunk_id", Value: 1}}},
+	}
+	_, err = pdfChunksCollection.Indexes().CreateMany(context.Background(), pdfChunkIndexes)
 	if err != nil {
 		return err
 	}

@@ -1,0 +1,20 @@
+# General OCR Service Dependencies (DeepSeek-OCR removed)
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+python-multipart>=0.0.6
+
+# PDF processing
+PyMuPDF>=1.23.0
+
+# Image processing (basic)
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# Production utilities
+requests>=2.31.0
+aiofiles>=23.2.0
+python-dotenv>=1.0.0
+
+# Production logging
+structlog>=23.1.0

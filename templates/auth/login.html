@@ -1,0 +1,29 @@
+{{ define "title" }}Login · SaaS Chatbot{{ end }}
+{{ template "base" . }}
+
+{{ define "content" }}
+<div class="card">
+  <h1 class="title">Sign in</h1>
+  {{ if .Error }}
+    <div class="alert error">{{ .Error }}</div>
+  {{ end }}
+
+  <form id="loginForm" class="form">
+    <input type="hidden" name="return_url" value="{{ .ReturnURL }}">
+    <input type="hidden" name="client_id" value="{{ .ClientID }}">
+
+    <label class="label">Username</label>
+    <input class="input" type="text" name="username" required autocomplete="username" />
+
+    <label class="label">Password</label>
+    <input class="input" type="password" name="password" required autocomplete="current-password" />
+
+    <button class="btn primary" type="submit">Login</button>
+  </form>
+
+  <p class="muted">
+    Don't have an account?
+    <a class="link" href="/auth/register?client_id={{ .ClientID }}&return_url={{ .ReturnURL }}">Create one</a>
+  </p>
+</div>
+{{ end }}

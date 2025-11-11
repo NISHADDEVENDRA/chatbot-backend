@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  tesseract-ocr:
+    build:
+      context: .
+      dockerfile: Dockerfile.tesseract
+    ports:
+      - "8001:8001"
+    environment:
+      - OCR_HOST=0.0.0.0
+      - OCR_PORT=8001
+      - TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata
+    volumes:
+      - ./temp:/app/temp
+      - ./tessdata:/app/tessdata
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Redis for caching OCR results
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:

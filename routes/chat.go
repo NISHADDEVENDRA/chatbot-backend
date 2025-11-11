@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -9,7 +10,6 @@ import (
 	"saas-chatbot-platform/internal/config"
 	"saas-chatbot-platform/middleware"
 	"saas-chatbot-platform/models"
-	"saas-chatbot-platform/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -27,10 +27,10 @@ func SetupChatRoutes(router *gin.Engine, cfg *config.Config, mongoClient *mongo.
 	clientsCollection := db.Collection("clients")
 	messagesCollection := db.Collection("messages")
 	pdfsCollection := db.Collection("pdfs")
+	crawlsCollection := db.Collection("crawls")
+	usersCollection := db.Collection("users")
 
-	geminiClient := utils.NewGeminiClient(cfg.GeminiAPIKey, cfg.GeminiAPIURL)
-
-	// Process chat messages with AI integration
+	// ✅ MAIN CHAT ENDPOINT - Integrating with Client.go AI system
 	chat.POST("/send", func(c *gin.Context) {
 		var req models.ChatRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -42,14 +42,14 @@ func SetupChatRoutes(router *gin.Engine, cfg *config.Config, mongoClient *mongo.
 			return
 		}
 
-		// Get user info from context
+		// Get user info from JWT token
 		userID := middleware.GetUserID(c)
 		userClientID := middleware.GetClientID(c)
 
-		if userClientID == "" {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error_code": "forbidden",
-				"message":    "Client ID required for chat",
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error_code": "unauthorized",
+				"message":    "User ID required",
 			})
 			return
 		}
@@ -63,149 +63,222 @@ func SetupChatRoutes(router *gin.Engine, cfg *config.Config, mongoClient *mongo.
 			return
 		}
 
-		clientObjID, err := primitive.ObjectIDFromHex(userClientID)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error_code": "invalid_client_id",
-				"message":    "Invalid client ID format",
-			})
-			return
-		}
-
-		// Get client to check token limits
-		var clientDoc models.Client
-		err = clientsCollection.FindOne(context.Background(), bson.M{"_id": clientObjID}).Decode(&clientDoc)
+		// Get user details from database
+		var user models.User
+		err = usersCollection.FindOne(context.Background(),
+			bson.M{"_id": userObjID}).Decode(&user)
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{
-				"error_code": "client_not_found",
-				"message":    "Client not found",
+				"error_code": "user_not_found",
+				"message":    "User not found",
 			})
 			return
 		}
 
-		// Check token limits
-		estimatedTokens := geminiClient.CalculateTokens(req.Message)
-		if clientDoc.TokenUsed+estimatedTokens > clientDoc.TokenLimit {
+		// ✅ DETERMINE CLIENT ID based on user role
+		var targetClientID primitive.ObjectID
+
+		if user.Role == "client" {
+			// For client users, use their own client_id (must exist)
+			if userClientID == "" {
+				c.JSON(http.StatusForbidden, gin.H{
+					"error_code": "missing_client_id",
+					"message":    "Client users must have client_id",
+				})
+				return
+			}
+			targetClientID, err = primitive.ObjectIDFromHex(userClientID)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error_code": "invalid_client_id",
+					"message":    "Invalid client ID format",
+				})
+				return
+			}
+		} else {
+			// For admin/visitor users, allow them to chat using any client's system
+			if userClientID != "" {
+				// If client_id provided, use that
+				targetClientID, err = primitive.ObjectIDFromHex(userClientID)
+				if err != nil {
+					targetClientID = getDefaultClientID(clientsCollection)
+				}
+			} else {
+				// Use first available client as default
+				targetClientID = getDefaultClientID(clientsCollection)
+			}
+		}
+
+		// Get client configuration using Client.go function
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		clientDoc, err := getClientConfig(ctx, clientsCollection, targetClientID)
+
+		if err != nil {
+			handleClientError(c, err)
+			return
+		}
+
+		// ✅ CHECK CLIENT STATUS - If inactive or suspended, block chat
+		if clientDoc.Status == "inactive" || clientDoc.Status == "suspended" {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error_code": "client_inactive",
+				"message":    fmt.Sprintf("Client account '%s' is not active. Status: %s", clientDoc.Name, clientDoc.Status),
+			})
+			return
+		}
+
+		// ✅ CHECK TOKEN BUDGET
+		if clientDoc.TokenUsed >= clientDoc.TokenLimit {
 			c.JSON(http.StatusPaymentRequired, gin.H{
 				"error_code": "token_limit_exceeded",
-				"message":    "Token limit exceeded",
+				"message": fmt.Sprintf("Token limit exceeded for %s. Used: %d, Limit: %d",
+					clientDoc.Name, clientDoc.TokenUsed, clientDoc.TokenLimit),
 				"details": gin.H{
-					"used":     clientDoc.TokenUsed,
-					"limit":    clientDoc.TokenLimit,
-					"required": estimatedTokens,
+					"client_name": clientDoc.Name,
+					"used":        clientDoc.TokenUsed,
+					"limit":       clientDoc.TokenLimit,
+					"user_role":   user.Role,
 				},
 			})
 			return
 		}
 
-		// Generate conversation ID if not provided
+		// ✅ GENERATE CONVERSATION ID with role info
 		conversationID := req.ConversationID
 		if conversationID == "" {
-			conversationID = uuid.New().String()
+			conversationID = fmt.Sprintf("%s_%s_%s",
+				targetClientID.Hex(), user.Role, uuid.New().String())
 		}
 
-		// Get relevant context from PDFs
-		relevantContext, err := getRelevantContext(pdfsCollection, clientObjID, req.Message, 3)
-		if err != nil {
-			// Log error but continue without context
-			relevantContext = []string{}
-		}
+		// ✅ USE AI SYSTEM from Client.go - generateAIResponseWithMemory
+		aiResponse, tokenCost, latency, err := generateAIResponseWithMemory(
+			ctx, cfg, db, pdfsCollection, messagesCollection, crawlsCollection, clientDoc, req.Message, conversationID)
 
-		// Call Gemini API
-		response, err := geminiClient.AskGemini(req.Message, relevantContext, 2)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error_code": "ai_service_error",
-				"message":    "Failed to get AI response",
-				"details":    gin.H{"error": err.Error()},
+				"error_code": "ai_generation_error",
+				"message":    "Failed to generate AI response",
+				"details":    err.Error(),
 			})
 			return
 		}
 
-		reply := geminiClient.ExtractResponseText(response)
-		actualTokens := geminiClient.CalculateTokens(req.Message + reply)
-
-		// Update client token usage atomically
-		filter := bson.M{
-			"_id":        clientObjID,
-			"token_used": bson.M{"$lte": clientDoc.TokenLimit - actualTokens},
-		}
-		update := bson.M{
-			"$inc": bson.M{"token_used": actualTokens},
-			"$set": bson.M{"updated_at": time.Now()},
-		}
-
-		result, err := clientsCollection.UpdateOne(context.Background(), filter, update)
-		if err != nil || result.MatchedCount == 0 {
+		// ✅ VALIDATE TOKEN BUDGET with actual cost
+		if clientDoc.TokenUsed+tokenCost > clientDoc.TokenLimit {
 			c.JSON(http.StatusPaymentRequired, gin.H{
-				"error_code": "token_limit_exceeded",
-				"message":    "Token limit exceeded during processing",
+				"error_code":       "insufficient_tokens",
+				"message":          fmt.Sprintf("Insufficient tokens for %s", clientDoc.Name),
+				"required_tokens":  tokenCost,
+				"available_tokens": clientDoc.TokenLimit - clientDoc.TokenUsed,
 			})
 			return
 		}
 
-		// Store message
+		// ✅ SAVE MESSAGE with full user details
 		message := models.Message{
+			ID:             primitive.NewObjectID(),
 			FromUserID:     userObjID,
-			FromName:       "", // You might want to get this from user doc
+			FromName:       user.Username,
 			Message:        req.Message,
-			Reply:          reply,
+			Reply:          aiResponse,
 			Timestamp:      time.Now(),
-			ClientID:       clientObjID,
+			ClientID:       targetClientID,
 			ConversationID: conversationID,
-			TokenCost:      actualTokens,
+			TokenCost:      tokenCost,
+			UserName:       user.Username, // ✅ Store username
+			UserEmail:      user.Email,    // ✅ Store email
 		}
 
 		_, err = messagesCollection.InsertOne(context.Background(), message)
 		if err != nil {
-			// Log error but don't fail the request since AI response was successful
+			// Log error but continue - AI response was successful
+			fmt.Printf("Failed to save message: %v\n", err)
 		}
 
-		// Calculate remaining tokens
-		remainingTokens := clientDoc.TokenLimit - (clientDoc.TokenUsed + actualTokens)
+		if err := updateTokenUsage(ctx, clientsCollection, targetClientID, clientDoc.TokenLimit, tokenCost); err != nil {
+			c.JSON(http.StatusPaymentRequired, gin.H{
+				"error": map[string]interface{}{
+					"code":    "token_update_failed",
+					"message": "Failed to update token usage",
+				},
+			})
+			return
+		}
+
+		// TRIGGER REAL-TIME ALERT EVALUATION
+		// go func() {
+		//     alertCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		//     defer cancel()
+
+		//	    // Get alert evaluator from global service (implement service registry)
+		//	    if alertEvaluator := getAlertEvaluator(); alertEvaluator != nil {
+		//	        if err := alertEvaluator.EvaluateAndNotify(alertCtx, targetClientID); err != nil {
+		//	            log.Printf("Failed to evaluate alerts for client %s: %v", targetClientID.Hex(), err)
+		//	        }
+		//	    }
+		//	}()
+
+		// Calculate remaining tokens AFTER database update
+		remainingTokens := clientDoc.TokenLimit - (clientDoc.TokenUsed + tokenCost)
 		if remainingTokens < 0 {
 			remainingTokens = 0
 		}
 
+		// ✅ RETURN COMPREHENSIVE RESPONSE
 		chatResponse := models.ChatResponse{
-			Reply:           reply,
-			TokensUsed:      actualTokens,
+			Reply:           aiResponse,
+			TokensUsed:      tokenCost,
 			RemainingTokens: remainingTokens,
 			ConversationID:  conversationID,
 			Timestamp:       time.Now(),
 		}
 
-		c.JSON(http.StatusOK, chatResponse)
+		c.JSON(http.StatusOK, gin.H{
+			"reply":            chatResponse.Reply,
+			"tokens_used":      chatResponse.TokensUsed,
+			"remaining_tokens": chatResponse.RemainingTokens,
+			"conversation_id":  chatResponse.ConversationID,
+			"timestamp":        chatResponse.Timestamp,
+			"latency_ms":       int(latency.Milliseconds()), // ✅ Using latency
+			"client_info": gin.H{
+				"client_id":   targetClientID.Hex(),
+				"client_name": clientDoc.Name,
+				"user_role":   user.Role,
+				"user_name":   user.Username,
+			},
+		})
 	})
 
-	// Get conversation history
+	// ✅ GET CONVERSATION HISTORY
 	chat.GET("/conversations/:conversation_id", func(c *gin.Context) {
 		conversationID := c.Param("conversation_id")
-		userClientID := middleware.GetClientID(c)
+		userID := middleware.GetUserID(c)
 
-		if userClientID == "" {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error_code": "forbidden",
-				"message":    "Client ID required",
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error_code": "unauthorized",
+				"message":    "User ID required",
 			})
 			return
 		}
 
-		clientObjID, err := primitive.ObjectIDFromHex(userClientID)
+		userObjID, err := primitive.ObjectIDFromHex(userID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error_code": "invalid_client_id",
-				"message":    "Invalid client ID format",
+				"error_code": "invalid_user_id",
+				"message":    "Invalid user ID format",
 			})
 			return
 		}
 
-		// Get messages for the conversation
+		// Get messages for the conversation (user's own messages)
 		cursor, err := messagesCollection.Find(
 			context.Background(),
 			bson.M{
 				"conversation_id": conversationID,
-				"client_id":       clientObjID,
+				"from_user_id":    userObjID,
 			},
 			options.Find().SetSort(bson.M{"timestamp": 1}),
 		)
@@ -250,15 +323,14 @@ func SetupChatRoutes(router *gin.Engine, cfg *config.Config, mongoClient *mongo.
 		c.JSON(http.StatusOK, conversation)
 	})
 
-	// List user conversations
+	// ✅ LIST USER CONVERSATIONS
 	chat.GET("/conversations", func(c *gin.Context) {
 		userID := middleware.GetUserID(c)
-		userClientID := middleware.GetClientID(c)
 
-		if userClientID == "" {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error_code": "forbidden",
-				"message":    "Client ID required",
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error_code": "unauthorized",
+				"message":    "User ID required",
 			})
 			return
 		}
@@ -272,26 +344,19 @@ func SetupChatRoutes(router *gin.Engine, cfg *config.Config, mongoClient *mongo.
 			return
 		}
 
-		clientObjID, err := primitive.ObjectIDFromHex(userClientID)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error_code": "invalid_client_id",
-				"message":    "Invalid client ID format",
-			})
-			return
-		}
-
-		// Get distinct conversation IDs for the user
+		// Get distinct conversation IDs for the user with aggregation
 		pipeline := mongo.Pipeline{
 			{{"$match", bson.D{
 				{"from_user_id", userObjID},
-				{"client_id", clientObjID},
 			}}},
 			{{"$group", bson.D{
 				{"_id", "$conversation_id"},
 				{"last_message", bson.D{{"$last", "$$ROOT"}}},
 				{"message_count", bson.D{{"$sum", 1}}},
 				{"total_tokens", bson.D{{"$sum", "$token_cost"}}},
+				{"client_info", bson.D{{"$first", bson.D{
+					{"client_id", "$client_id"},
+				}}}},
 			}}},
 			{{"$sort", bson.D{{"last_message.timestamp", -1}}}},
 		}
@@ -313,10 +378,18 @@ func SetupChatRoutes(router *gin.Engine, cfg *config.Config, mongoClient *mongo.
 				LastMessage  models.Message `bson:"last_message"`
 				MessageCount int            `bson:"message_count"`
 				TotalTokens  int            `bson:"total_tokens"`
+				ClientInfo   struct {
+					ClientID primitive.ObjectID `bson:"client_id"`
+				} `bson:"client_info"`
 			}
 			if err := cursor.Decode(&result); err != nil {
 				continue
 			}
+
+			// Get client name using existing function
+			var client models.Client
+			clientsCollection.FindOne(context.Background(),
+				bson.M{"_id": result.ClientInfo.ClientID}).Decode(&client)
 
 			conversation := gin.H{
 				"conversation_id": result.ID,
@@ -324,6 +397,8 @@ func SetupChatRoutes(router *gin.Engine, cfg *config.Config, mongoClient *mongo.
 				"message_count":   result.MessageCount,
 				"total_tokens":    result.TotalTokens,
 				"updated_at":      result.LastMessage.Timestamp,
+				"client_name":     client.Name,
+				"client_id":       result.ClientInfo.ClientID.Hex(),
 			}
 
 			conversations = append(conversations, conversation)
@@ -336,7 +411,19 @@ func SetupChatRoutes(router *gin.Engine, cfg *config.Config, mongoClient *mongo.
 	})
 }
 
-// Helper function to get relevant context from PDFs
+// ✅ HELPER FUNCTIONS (minimal, non-duplicate)
+
+// getDefaultClientID gets the first available client for admin/visitor users
+func getDefaultClientID(collection *mongo.Collection) primitive.ObjectID {
+	var client models.Client
+	err := collection.FindOne(context.Background(), bson.M{}).Decode(&client)
+	if err != nil {
+		return primitive.NewObjectID() // Return new ID if no client found
+	}
+	return client.ID
+}
+
+// Helper function to get relevant context from PDFs (already exists in your current chat.go)
 func getRelevantContext(pdfsCollection *mongo.Collection, clientID primitive.ObjectID, query string, maxChunks int) ([]string, error) {
 	// Get all PDFs for the client
 	cursor, err := pdfsCollection.Find(

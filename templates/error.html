@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Error</title>
+    <style>
+        body { 
+            font-family: system-ui, -apple-system, sans-serif; 
+            text-align: center; 
+            padding: 50px; 
+            background: #f8fafc;
+            color: #334155;
+        }
+        .container {
+            max-width: 500px;
+            margin: 0 auto;
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        h1 { color: #dc2626; margin-bottom: 20px; }
+        .error { 
+            color: #dc2626; 
+            margin: 20px 0; 
+            font-size: 16px;
+            line-height: 1.5;
+        }
+        .back { 
+            color: #3b82f6; 
+            text-decoration: none; 
+            display: inline-block;
+            margin-top: 20px;
+            padding: 10px 20px;
+            border: 2px solid #3b82f6;
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+        .back:hover {
+            background: #3b82f6;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Oops!</h1>
+        <p class="error">{{ .Error }}</p>
+        <a href="javascript:history.back()" class="back">← Go Back</a>
+    </div>
+</body>
+</html>
