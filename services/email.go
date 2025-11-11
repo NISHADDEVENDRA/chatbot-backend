@@ -5,6 +5,7 @@ import (
     "context"
     "fmt"
     "html/template"
+    "log"
     "net"
     "net/smtp"
     "strings"
@@ -104,6 +105,12 @@ func (s *SMTPEmailSender) generateEmailContent(alertLevel string, data TokenAler
 }
 
 func (s *SMTPEmailSender) sendEmail(recipients []string, subject, htmlBody, textBody string) error {
+    // Validate SMTP configuration
+    if s.config.SMTPHost == "" || s.config.SMTPUser == "" || s.config.SMTPPass == "" || s.config.SMTPFrom == "" {
+        return fmt.Errorf("SMTP configuration incomplete - missing required fields (Host: %v, User: %v, Pass: %v, From: %v)", 
+            s.config.SMTPHost != "", s.config.SMTPUser != "", s.config.SMTPPass != "", s.config.SMTPFrom != "")
+    }
+    
     // Create context with timeout for SMTP connection (10 seconds)
     ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
     defer cancel()
@@ -139,12 +146,15 @@ Content-Type: text/html; charset=UTF-8
     addr := fmt.Sprintf("%s:%s", s.config.SMTPHost, s.config.SMTPPort)
     
     // Use dialer with timeout
+    log.Printf("📧 Connecting to SMTP server: %s", addr)
     d := &net.Dialer{Timeout: 5 * time.Second}
     conn, err := d.DialContext(ctx, "tcp", addr)
     if err != nil {
-        return fmt.Errorf("failed to connect to SMTP server: %w", err)
+        log.Printf("❌ SMTP connection failed: %v", err)
+        return fmt.Errorf("failed to connect to SMTP server %s: %w", addr, err)
     }
     defer conn.Close()
+    log.Printf("✅ Connected to SMTP server")
     
     // Set deadline on the connection for all SMTP operations
     conn.SetDeadline(time.Now().Add(10 * time.Second))
@@ -152,41 +162,56 @@ Content-Type: text/html; charset=UTF-8
     // Create SMTP client
     client, err := smtp.NewClient(conn, s.config.SMTPHost)
     if err != nil {
+        log.Printf("❌ Failed to create SMTP client: %v", err)
         return fmt.Errorf("failed to create SMTP client: %w", err)
     }
     defer client.Close()
+    log.Printf("✅ SMTP client created")
     
     // Authenticate
+    log.Printf("📧 Authenticating with SMTP server...")
     if err := client.Auth(auth); err != nil {
+        log.Printf("❌ SMTP authentication failed: %v", err)
         return fmt.Errorf("SMTP authentication failed: %w", err)
     }
+    log.Printf("✅ SMTP authentication successful")
     
     // Set sender
+    log.Printf("📧 Setting sender: %s", s.config.SMTPFrom)
     if err := client.Mail(s.config.SMTPFrom); err != nil {
+        log.Printf("❌ Failed to set sender: %v", err)
         return fmt.Errorf("failed to set sender: %w", err)
     }
     
     // Set recipients
+    log.Printf("📧 Setting recipients: %v", recipients)
     for _, recipient := range recipients {
         if err := client.Rcpt(recipient); err != nil {
+            log.Printf("❌ Failed to set recipient %s: %v", recipient, err)
             return fmt.Errorf("failed to set recipient %s: %w", recipient, err)
         }
     }
+    log.Printf("✅ All recipients set")
     
     // Send email data
+    log.Printf("📧 Sending email data...")
     w, err := client.Data()
     if err != nil {
+        log.Printf("❌ Failed to open data connection: %v", err)
         return fmt.Errorf("failed to open data connection: %w", err)
     }
     _, err = w.Write([]byte(message))
     if err != nil {
         w.Close()
+        log.Printf("❌ Failed to write email data: %v", err)
         return fmt.Errorf("failed to write email data: %w", err)
     }
     err = w.Close()
     if err != nil {
+        log.Printf("❌ Failed to close data connection: %v", err)
         return fmt.Errorf("failed to close data connection: %w", err)
     }
+    log.Printf("✅ Email sent successfully to %v", recipients)
     
     return nil
 }

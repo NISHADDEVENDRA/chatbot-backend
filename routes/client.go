@@ -10491,11 +10491,15 @@ Timestamp: %s
 
 		// Send email to company asynchronously (don't block the request)
 		go func() {
+			log.Printf("📧 Attempting to send quote proposal email to: %v", recipients)
+			log.Printf("📧 SMTP Config - Host: %s, Port: %s, From: %s", cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPFrom)
+			
 			if err := emailSender.SendEmail(recipients, companySubject, companyHTMLBody, companyTextBody); err != nil {
-				fmt.Printf("Failed to send quote proposal email: %v\n", err)
+				log.Printf("❌ Failed to send quote proposal email: %v", err)
+				log.Printf("❌ Error details: %+v", err)
 				// Log error but don't fail the request
 			} else {
-				fmt.Printf("Quote proposal email sent successfully to %v\n", recipients)
+				log.Printf("✅ Quote proposal email sent successfully to %v", recipients)
 			}
 		}()
 
