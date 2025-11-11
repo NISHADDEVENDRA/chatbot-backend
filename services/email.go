@@ -2,14 +2,9 @@ package services
 
 import (
     "bytes"
-    "context"
-    "crypto/tls"
     "fmt"
     "html/template"
-    "log"
-    "net"
     "net/smtp"
-    "strconv"
     "strings"
     "time"
     
@@ -107,16 +102,6 @@ func (s *SMTPEmailSender) generateEmailContent(alertLevel string, data TokenAler
 }
 
 func (s *SMTPEmailSender) sendEmail(recipients []string, subject, htmlBody, textBody string) error {
-    // Validate SMTP configuration
-    if s.config.SMTPHost == "" || s.config.SMTPUser == "" || s.config.SMTPPass == "" || s.config.SMTPFrom == "" {
-        return fmt.Errorf("SMTP configuration incomplete - missing required fields (Host: %v, User: %v, Pass: %v, From: %v)", 
-            s.config.SMTPHost != "", s.config.SMTPUser != "", s.config.SMTPPass != "", s.config.SMTPFrom != "")
-    }
-    
-    // Create context with timeout for SMTP connection (10 seconds)
-    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-    defer cancel()
-    
     // SMTP authentication
     auth := smtp.PlainAuth("", s.config.SMTPUser, s.config.SMTPPass, s.config.SMTPHost)
     
@@ -144,119 +129,9 @@ Content-Type: text/html; charset=UTF-8
         textBody,
         htmlBody)
     
-    // Send email with timeout
+    // Send email
     addr := fmt.Sprintf("%s:%s", s.config.SMTPHost, s.config.SMTPPort)
-    port, _ := strconv.Atoi(s.config.SMTPPort)
-    
-    // Use dialer with timeout
-    log.Printf("📧 Connecting to SMTP server: %s (port %d)", addr, port)
-    d := &net.Dialer{Timeout: 5 * time.Second}
-    conn, err := d.DialContext(ctx, "tcp", addr)
-    if err != nil {
-        log.Printf("❌ SMTP connection failed: %v", err)
-        return fmt.Errorf("failed to connect to SMTP server %s: %w", addr, err)
-    }
-    defer conn.Close()
-    log.Printf("✅ Connected to SMTP server")
-    
-    // Set deadline on the connection for all SMTP operations
-    conn.SetDeadline(time.Now().Add(10 * time.Second))
-    
-    var client *smtp.Client
-    
-    // Port 465 uses SSL/TLS from the start (no STARTTLS)
-    if port == 465 {
-        log.Printf("📧 Using SSL/TLS for port 465...")
-        tlsConfig := &tls.Config{
-            ServerName: s.config.SMTPHost,
-            InsecureSkipVerify: false,
-        }
-        tlsConn := tls.Client(conn, tlsConfig)
-        if err := tlsConn.HandshakeContext(ctx); err != nil {
-            log.Printf("❌ TLS handshake failed: %v", err)
-            return fmt.Errorf("TLS handshake failed: %w", err)
-        }
-        log.Printf("✅ TLS handshake successful")
-        
-        // Create SMTP client over TLS connection
-        client, err = smtp.NewClient(tlsConn, s.config.SMTPHost)
-        if err != nil {
-            log.Printf("❌ Failed to create SMTP client: %v", err)
-            return fmt.Errorf("failed to create SMTP client: %w", err)
-        }
-    } else {
-        // Port 587 uses STARTTLS (upgrade after connection)
-        log.Printf("📧 Using STARTTLS for port %d...", port)
-        client, err = smtp.NewClient(conn, s.config.SMTPHost)
-        if err != nil {
-            log.Printf("❌ Failed to create SMTP client: %v", err)
-            return fmt.Errorf("failed to create SMTP client: %w", err)
-        }
-        
-        // Check if server supports STARTTLS
-        if ok, _ := client.Extension("STARTTLS"); ok {
-            log.Printf("📧 Starting TLS...")
-            tlsConfig := &tls.Config{
-                ServerName: s.config.SMTPHost,
-                InsecureSkipVerify: false,
-            }
-            if err := client.StartTLS(tlsConfig); err != nil {
-                log.Printf("❌ STARTTLS failed: %v", err)
-                return fmt.Errorf("STARTTLS failed: %w", err)
-            }
-            log.Printf("✅ STARTTLS successful")
-        }
-    }
-    
-    defer client.Close()
-    log.Printf("✅ SMTP client created")
-    
-    // Authenticate
-    log.Printf("📧 Authenticating with SMTP server...")
-    if err := client.Auth(auth); err != nil {
-        log.Printf("❌ SMTP authentication failed: %v", err)
-        return fmt.Errorf("SMTP authentication failed: %w", err)
-    }
-    log.Printf("✅ SMTP authentication successful")
-    
-    // Set sender
-    log.Printf("📧 Setting sender: %s", s.config.SMTPFrom)
-    if err := client.Mail(s.config.SMTPFrom); err != nil {
-        log.Printf("❌ Failed to set sender: %v", err)
-        return fmt.Errorf("failed to set sender: %w", err)
-    }
-    
-    // Set recipients
-    log.Printf("📧 Setting recipients: %v", recipients)
-    for _, recipient := range recipients {
-        if err := client.Rcpt(recipient); err != nil {
-            log.Printf("❌ Failed to set recipient %s: %v", recipient, err)
-            return fmt.Errorf("failed to set recipient %s: %w", recipient, err)
-        }
-    }
-    log.Printf("✅ All recipients set")
-    
-    // Send email data
-    log.Printf("📧 Sending email data...")
-    w, err := client.Data()
-    if err != nil {
-        log.Printf("❌ Failed to open data connection: %v", err)
-        return fmt.Errorf("failed to open data connection: %w", err)
-    }
-    _, err = w.Write([]byte(message))
-    if err != nil {
-        w.Close()
-        log.Printf("❌ Failed to write email data: %v", err)
-        return fmt.Errorf("failed to write email data: %w", err)
-    }
-    err = w.Close()
-    if err != nil {
-        log.Printf("❌ Failed to close data connection: %v", err)
-        return fmt.Errorf("failed to close data connection: %w", err)
-    }
-    log.Printf("✅ Email sent successfully to %v", recipients)
-    
-    return nil
+    return smtp.SendMail(addr, auth, s.config.SMTPFrom, recipients, []byte(message))
 }
 
 // SendEmail sends a generic email with HTML and text bodies
