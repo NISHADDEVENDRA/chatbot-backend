@@ -3,11 +3,13 @@ package services
 import (
     "bytes"
     "context"
+    "crypto/tls"
     "fmt"
     "html/template"
     "log"
     "net"
     "net/smtp"
+    "strconv"
     "strings"
     "time"
     
@@ -144,9 +146,10 @@ Content-Type: text/html; charset=UTF-8
     
     // Send email with timeout
     addr := fmt.Sprintf("%s:%s", s.config.SMTPHost, s.config.SMTPPort)
+    port, _ := strconv.Atoi(s.config.SMTPPort)
     
     // Use dialer with timeout
-    log.Printf("📧 Connecting to SMTP server: %s", addr)
+    log.Printf("📧 Connecting to SMTP server: %s (port %d)", addr, port)
     d := &net.Dialer{Timeout: 5 * time.Second}
     conn, err := d.DialContext(ctx, "tcp", addr)
     if err != nil {
@@ -159,12 +162,52 @@ Content-Type: text/html; charset=UTF-8
     // Set deadline on the connection for all SMTP operations
     conn.SetDeadline(time.Now().Add(10 * time.Second))
     
-    // Create SMTP client
-    client, err := smtp.NewClient(conn, s.config.SMTPHost)
-    if err != nil {
-        log.Printf("❌ Failed to create SMTP client: %v", err)
-        return fmt.Errorf("failed to create SMTP client: %w", err)
+    var client *smtp.Client
+    
+    // Port 465 uses SSL/TLS from the start (no STARTTLS)
+    if port == 465 {
+        log.Printf("📧 Using SSL/TLS for port 465...")
+        tlsConfig := &tls.Config{
+            ServerName: s.config.SMTPHost,
+            InsecureSkipVerify: false,
+        }
+        tlsConn := tls.Client(conn, tlsConfig)
+        if err := tlsConn.HandshakeContext(ctx); err != nil {
+            log.Printf("❌ TLS handshake failed: %v", err)
+            return fmt.Errorf("TLS handshake failed: %w", err)
+        }
+        log.Printf("✅ TLS handshake successful")
+        
+        // Create SMTP client over TLS connection
+        client, err = smtp.NewClient(tlsConn, s.config.SMTPHost)
+        if err != nil {
+            log.Printf("❌ Failed to create SMTP client: %v", err)
+            return fmt.Errorf("failed to create SMTP client: %w", err)
+        }
+    } else {
+        // Port 587 uses STARTTLS (upgrade after connection)
+        log.Printf("📧 Using STARTTLS for port %d...", port)
+        client, err = smtp.NewClient(conn, s.config.SMTPHost)
+        if err != nil {
+            log.Printf("❌ Failed to create SMTP client: %v", err)
+            return fmt.Errorf("failed to create SMTP client: %w", err)
+        }
+        
+        // Check if server supports STARTTLS
+        if ok, _ := client.Extension("STARTTLS"); ok {
+            log.Printf("📧 Starting TLS...")
+            tlsConfig := &tls.Config{
+                ServerName: s.config.SMTPHost,
+                InsecureSkipVerify: false,
+            }
+            if err := client.StartTLS(tlsConfig); err != nil {
+                log.Printf("❌ STARTTLS failed: %v", err)
+                return fmt.Errorf("STARTTLS failed: %w", err)
+            }
+            log.Printf("✅ STARTTLS successful")
+        }
     }
+    
     defer client.Close()
     log.Printf("✅ SMTP client created")
     
