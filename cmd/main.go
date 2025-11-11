@@ -163,7 +163,7 @@ func main() {
 	corsConfig := cors.Config{
 		AllowOrigins:     cfg.CORSOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Requested-With", "Cookie", "X-Client-ID", "X-Embed-Secret", "X-Refresh-Token"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Requested-With", "Cookie", "X-Client-ID", "X-Embed-Secret", "X-Refresh-Token", "X-Request-Time", "X-Correlation-ID"},
 		AllowCredentials: true,                   // CRITICAL: Allow cookies
 		AllowAllOrigins:  false,                  // CRITICAL: Must be false when credentials=true
 		ExposeHeaders:    []string{"Set-Cookie"}, // Allow Set-Cookie header

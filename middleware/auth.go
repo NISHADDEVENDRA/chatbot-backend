@@ -217,7 +217,7 @@ func CORSPreflightHandler() gin.HandlerFunc {
 		if c.Request.Method == "OPTIONS" {
 			c.Header("Access-Control-Allow-Origin", "*")
 			c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-			c.Header("Access-Control-Allow-Headers", "Origin,Content-Type,Accept,Authorization,X-Requested-With")
+			c.Header("Access-Control-Allow-Headers", "Origin,Content-Type,Accept,Authorization,X-Requested-With,X-Client-ID,X-Embed-Secret,X-Refresh-Token,X-Request-Time,X-Correlation-ID,Cookie")
 			c.Header("Access-Control-Allow-Credentials", "true")
 			c.AbortWithStatus(http.StatusNoContent)
 			return
