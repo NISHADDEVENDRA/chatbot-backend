@@ -2,8 +2,10 @@ package services
 
 import (
     "bytes"
+    "context"
     "fmt"
     "html/template"
+    "net"
     "net/smtp"
     "strings"
     "time"
@@ -102,6 +104,10 @@ func (s *SMTPEmailSender) generateEmailContent(alertLevel string, data TokenAler
 }
 
 func (s *SMTPEmailSender) sendEmail(recipients []string, subject, htmlBody, textBody string) error {
+    // Create context with timeout for SMTP connection (10 seconds)
+    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+    
     // SMTP authentication
     auth := smtp.PlainAuth("", s.config.SMTPUser, s.config.SMTPPass, s.config.SMTPHost)
     
@@ -129,9 +135,60 @@ Content-Type: text/html; charset=UTF-8
         textBody,
         htmlBody)
     
-    // Send email
+    // Send email with timeout
     addr := fmt.Sprintf("%s:%s", s.config.SMTPHost, s.config.SMTPPort)
-    return smtp.SendMail(addr, auth, s.config.SMTPFrom, recipients, []byte(message))
+    
+    // Use dialer with timeout
+    d := &net.Dialer{Timeout: 5 * time.Second}
+    conn, err := d.DialContext(ctx, "tcp", addr)
+    if err != nil {
+        return fmt.Errorf("failed to connect to SMTP server: %w", err)
+    }
+    defer conn.Close()
+    
+    // Create SMTP client with timeout
+    client, err := smtp.NewClient(conn, s.config.SMTPHost)
+    if err != nil {
+        return fmt.Errorf("failed to create SMTP client: %w", err)
+    }
+    defer client.Close()
+    
+    // Set timeout for SMTP operations
+    client.SetDeadline(time.Now().Add(10 * time.Second))
+    
+    // Authenticate
+    if err := client.Auth(auth); err != nil {
+        return fmt.Errorf("SMTP authentication failed: %w", err)
+    }
+    
+    // Set sender
+    if err := client.Mail(s.config.SMTPFrom); err != nil {
+        return fmt.Errorf("failed to set sender: %w", err)
+    }
+    
+    // Set recipients
+    for _, recipient := range recipients {
+        if err := client.Rcpt(recipient); err != nil {
+            return fmt.Errorf("failed to set recipient %s: %w", recipient, err)
+        }
+    }
+    
+    // Send email data
+    w, err := client.Data()
+    if err != nil {
+        return fmt.Errorf("failed to open data connection: %w", err)
+    }
+    _, err = w.Write([]byte(message))
+    if err != nil {
+        w.Close()
+        return fmt.Errorf("failed to write email data: %w", err)
+    }
+    err = w.Close()
+    if err != nil {
+        return fmt.Errorf("failed to close data connection: %w", err)
+    }
+    
+    return nil
 }
 
 // SendEmail sends a generic email with HTML and text bodies

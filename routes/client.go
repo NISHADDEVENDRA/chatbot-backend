@@ -10444,11 +10444,14 @@ func handlePublicQuote(cfg *config.Config, clientsCollection *mongo.Collection) 
 				// Generate text body from template
 				visitorTextBody := generateQuoteEmailText(tf)
 
-				// Send email to visitor
-				if err := emailSender.SendEmail([]string{req.ClientEmail}, visitorSubject, visitorHTMLBody, visitorTextBody); err != nil {
-					fmt.Printf("Failed to send visitor email: %v\n", err)
-					// Don't fail the request, continue to send company notification
-				}
+				// Send email to visitor asynchronously
+				go func() {
+					if err := emailSender.SendEmail([]string{req.ClientEmail}, visitorSubject, visitorHTMLBody, visitorTextBody); err != nil {
+						fmt.Printf("Failed to send visitor email: %v\n", err)
+					} else {
+						fmt.Printf("Quote visitor email sent successfully to %s\n", req.ClientEmail)
+					}
+				}()
 			} else {
 				// No template found - log error but don't fail the request
 				fmt.Printf("Email template not found for client %s (type: quote_visitor). Please configure email template in dashboard.\n", clientOID.Hex())
@@ -10486,21 +10489,20 @@ Requested By: %s
 Timestamp: %s
 		`, companyName, companyDescription, req.ClientEmail, time.Now().Format("2006-01-02 15:04:05"))
 
-		// Send email to company
-		if err := emailSender.SendEmail(recipients, companySubject, companyHTMLBody, companyTextBody); err != nil {
-			fmt.Printf("Failed to send quote proposal email: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error_code": "email_send_failed",
-				"message":    "Failed to send proposal email",
-				"details":    err.Error(),
-			})
-			return
-		}
+		// Send email to company asynchronously (don't block the request)
+		go func() {
+			if err := emailSender.SendEmail(recipients, companySubject, companyHTMLBody, companyTextBody); err != nil {
+				fmt.Printf("Failed to send quote proposal email: %v\n", err)
+				// Log error but don't fail the request
+			} else {
+				fmt.Printf("Quote proposal email sent successfully to %v\n", recipients)
+			}
+		}()
 
-		// Return success response
+		// Return success response immediately (email is sent in background)
 		c.JSON(http.StatusOK, gin.H{
 			"success":   true,
-			"message":   "Proposal sent successfully",
+			"message":   "Proposal request received. You will be contacted shortly.",
 			"timestamp": time.Now().Unix(),
 		})
 	}
