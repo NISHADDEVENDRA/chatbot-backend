@@ -30,6 +30,11 @@ func SetupAuthRoutes(router *gin.Engine, cfg *config.Config, mongoClient *mongo.
 	
 	// Determine cookie security based on environment
 	secure := cfg.GinMode == "release"
+	// For cross-origin requests, use SameSite=None (requires Secure=true)
+	sameSite := http.SameSiteLaxMode
+	if secure {
+		sameSite = http.SameSiteNoneMode // Required for cross-origin cookies in production
+	}
 
 	db := mongoClient.Database(cfg.DBName)
 	usersCollection := db.Collection("users")
@@ -125,24 +130,25 @@ func SetupAuthRoutes(router *gin.Engine, cfg *config.Config, mongoClient *mongo.
 		}
 
 		// Set access token cookie
-		c.SetSameSite(http.SameSiteLaxMode)
+		c.SetSameSite(sameSite)
 		c.SetCookie(
 			"access_token",             // name
 			tokenPair.AccessToken,      // value
 			int(1*time.Hour.Seconds()), // maxAge in seconds (1 hour)
 			"/",                        // path
-			"",                         // domain (empty for localhost)
+			"",                         // domain (empty - works for cross-origin with SameSite=None)
 			secure,                     // secure (true in production, false in development)
 			true,                       // httpOnly (true for security)
 		)
 
 		// Set refresh token cookie
+		c.SetSameSite(sameSite)
 		c.SetCookie(
 			"refresh_token",               // name
 			tokenPair.RefreshToken,        // value
 			int(7*24*time.Hour.Seconds()), // maxAge in seconds (7 days)
 			"/",                           // path
-			"",                            // domain (empty for localhost)
+			"",                            // domain (empty - works for cross-origin with SameSite=None)
 			secure,                        // secure (true in production, false in development)
 			true,                          // httpOnly (true for security)
 		)
@@ -214,24 +220,25 @@ func SetupAuthRoutes(router *gin.Engine, cfg *config.Config, mongoClient *mongo.
 		}
 
 		// Set access token cookie
-		c.SetSameSite(http.SameSiteLaxMode)
+		c.SetSameSite(sameSite)
 		c.SetCookie(
 			"access_token",             // name
 			tokenPair.AccessToken,      // value
 			int(1*time.Hour.Seconds()), // maxAge in seconds (1 hour)
 			"/",                        // path
-			"",                         // domain (empty for localhost)
+			"",                         // domain (empty - works for cross-origin with SameSite=None)
 			secure,                     // secure (true in production, false in development)
 			true,                       // httpOnly (true for security)
 		)
 
 		// Set refresh token cookie
+		c.SetSameSite(sameSite)
 		c.SetCookie(
 			"refresh_token",               // name
 			tokenPair.RefreshToken,        // value
 			int(7*24*time.Hour.Seconds()), // maxAge in seconds (7 days)
 			"/",                           // path
-			"",                            // domain (empty for localhost)
+			"",                            // domain (empty - works for cross-origin with SameSite=None)
 			secure,                        // secure (true in production, false in development)
 			true,                          // httpOnly (true for security)
 		)
@@ -293,24 +300,25 @@ func SetupAuthRoutes(router *gin.Engine, cfg *config.Config, mongoClient *mongo.
 		}
 
 		// Set new access token cookie
-		c.SetSameSite(http.SameSiteLaxMode)
+		c.SetSameSite(sameSite)
 		c.SetCookie(
 			"access_token",             // name
 			tokenPair.AccessToken,      // value
 			int(1*time.Hour.Seconds()), // maxAge in seconds (1 hour)
 			"/",                        // path
-			"",                         // domain (empty for localhost)
+			"",                         // domain (empty - works for cross-origin with SameSite=None)
 			secure,                     // secure (true in production, false in development)
 			true,                       // httpOnly (true for security)
 		)
 
 		// Set new refresh token cookie
+		c.SetSameSite(sameSite)
 		c.SetCookie(
 			"refresh_token",               // name
 			tokenPair.RefreshToken,        // value
 			int(7*24*time.Hour.Seconds()), // maxAge in seconds (7 days)
 			"/",                           // path
-			"",                            // domain (empty for localhost)
+			"",                            // domain (empty - works for cross-origin with SameSite=None)
 			secure,                        // secure (true in production, false in development)
 			true,                          // httpOnly (true for security)
 		)
