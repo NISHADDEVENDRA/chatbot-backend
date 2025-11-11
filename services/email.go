@@ -146,15 +146,15 @@ Content-Type: text/html; charset=UTF-8
     }
     defer conn.Close()
     
-    // Create SMTP client with timeout
+    // Set deadline on the connection for all SMTP operations
+    conn.SetDeadline(time.Now().Add(10 * time.Second))
+    
+    // Create SMTP client
     client, err := smtp.NewClient(conn, s.config.SMTPHost)
     if err != nil {
         return fmt.Errorf("failed to create SMTP client: %w", err)
     }
     defer client.Close()
-    
-    // Set timeout for SMTP operations
-    client.SetDeadline(time.Now().Add(10 * time.Second))
     
     // Authenticate
     if err := client.Auth(auth); err != nil {
